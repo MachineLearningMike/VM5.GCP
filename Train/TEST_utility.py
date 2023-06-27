@@ -187,7 +187,7 @@ def intervalToMilliseconds(interval):
     return ms
 
 
-def get_joint_time_features_2(CandleFile, nCandles, datatype):
+def get_time_features_2(CandleFile, nCandles, datatype):
     start = datetime( 2000+int(CandleFile[0:2]), int(CandleFile[3:5]), int(CandleFile[6:8]), int(CandleFile[9:11]), int(CandleFile[12:14]) )
     start_ts = round(datetime.timestamp(start))
     interval = CandleFile[ CandleFile.find('-', len(CandleFile) - 4) + 1 : ]
@@ -205,41 +205,6 @@ def get_joint_time_features_2(CandleFile, nCandles, datatype):
 
     Times = Times.astype(datatype)
     return start_ts, interval_s, timestamps_abs, Times
-
-
-def get_time_features_3(CandleFile, nStart, nEnd, datatype):    # nEnd: exclusive
-    start = datetime( 2000+int(CandleFile[0:2]), int(CandleFile[3:5]), int(CandleFile[6:8]), int(CandleFile[9:11]), int(CandleFile[12:14]) )
-    start_ts = round(datetime.timestamp(start))
-    interval = CandleFile[ CandleFile.find('-', len(CandleFile) - 4) + 1 : ]
-    interval_s = round(intervalToMilliseconds(interval) / 1000)
-    timestamps_abs = np.array( range(start_ts + nStart * interval_s, start_ts + nEnd * interval_s, interval_s), dtype=np.int64) # must be 64
-    assert timestamps_abs.shape[0] == nEnd - nStart
-
-    sigma = np.power(2.0, -0.2)
-    hourly = np.sin( 2 * np.pi / (60*60) * timestamps_abs ) / sigma
-    daily = np.sin( 2 * np.pi / (60*60*24) * timestamps_abs ) / sigma
-    weekly = np.sin( 2 * np.pi / (60*60*24*7) * timestamps_abs ) / sigma
-    yearly = np.sin( 2 * np.pi / (60*60*24*365) * timestamps_abs ) / sigma
-    tenyearly = np.sin( 2 * np.pi / (60*60*24*365*10) * timestamps_abs ) / sigma    # Let the model absorb non-cyclic time features.
-    Times = np.stack([hourly, daily, weekly, yearly], axis=1)
-
-    Times = Times.astype(datatype)
-    return start_ts, interval_s, timestamps_abs, Times
-
-
-def get_standalone_time_features(CandleFile, CandleFile3, nCandles3, datatype):
-    start_ts, interval_s, _, _ = get_joint_time_features_2(CandleFile, 0, datatype)
-    start_ts3, _, _, _ = get_joint_time_features_2(CandleFile3, 0, datatype)
-    assert start_ts <= start_ts3
-    nCandles = round( (start_ts3 - start_ts) / interval_s ) + nCandles3
-    _, _, timestamps_abs, Times = get_joint_time_features_2(CandleFile, nCandles, datatype)
-
-    timestamps_abs3 = timestamps_abs[round((start_ts3 - start_ts) / interval_s):]
-    assert timestamps_abs3.shape[0] == nCandles3
-    Times3 = Times[round((start_ts3 - start_ts) / interval_s):]
-    assert Times3.shape[0] == nCandles3
-
-    return start_ts3, interval_s, timestamps_abs3, Times3
 
 
 #==================== Define 'Get_eFree' ====================
@@ -366,37 +331,6 @@ def get_eventfree_data(
     return Candles, CandleMarks, Times
 
 
-def get_eventfree_data_2(
-        Candles, CandleMarks, Times,
-        smallSigma, largeSigma, all_market_names, chosen_market_names, 
-        all_field_names, chosen_field_names,
-        eFreeNoLog, eFreeNoPlot, volume_volatility
-    ):
-    volume_volatility = 3 if 'BaseVolume' in all_field_names else 1
-    assert volume_volatility >= 1
-    
-    event_free_data_loss = \
-    3 * ( (volume_volatility if 'BaseVolume' in all_field_names else 1) * smallSigma + largeSigma )
-
-    data_length = Candles.shape[0]
-    for market in range(Candles.shape[1]):
-        for field in range(Candles.shape[2]):
-            thisSigma = smallSigma
-            if all_field_names[field] == 'BaseVolume': thisSigma = smallSigma * volume_volatility
-            P, maP, logP, log_maP, event, eventFree = \
-            get_eFree_with_plot(all_market_names[market], all_field_names[field], Candles[:, market, field], 
-                                thisSigma, largeSigma, noPlot=eFreeNoPlot, noLog=eFreeNoLog)
-            data_length = min(data_length, eventFree.shape[0])
-            eventFree = eventFree.astype(Candles.dtype)
-            Candles[-eventFree.shape[0]:, market, field] = eventFree
-
-    Candles = Candles[-data_length:]
-    Times = Times[-data_length:]
-    CandleMarks= CandleMarks[-data_length:]
-
-    return Candles, CandleMarks, Times, events
-
-
 def get_timepoint_size(indices):
     size = 1
     for ids in indices:
@@ -496,169 +430,11 @@ def get_formed_data_3(
         if r[1] >= min(min_true_candle_percent_x, min_true_candle_percent_y):
             assert r[0] in chosen_market_names
 
-    assert Candles.shape[0] == CandleMarks.shape[0]
-    assert Candles.shape[1] == CandleMarks.shape[1]
-    assert Candles.shape[1] == len(chosen_market_names)
-
     return \
         Candles, CandleMarks, all_market_names, x_indices, y_indices, \
         chosen_market_names_x, chosen_field_names_x, chosen_market_names_y, chosen_field_names_y, \
         chosen_market_names, chosen_field_names, \
         target_market_names, target_markets
-
-
-def get_formed_data_4(
-        Candles, reports, all_field_names, 
-        min_true_candle_percent_x, chosen_fields_names_x, min_true_candle_percent_y, chosen_fields_names_y,
-        learning_field_names, target_market_names, tarket_market_top_percent
-    ):
-
-    all_market_names = [ s[0: s.find(':')] for s in reports if 'Success' in s ]
-    assert Candles.shape[0] == len(all_market_names)
-
-    # This function couples with the data collection program, in the structure of Candles and Report data.
-    Candles = np.swapaxes(Candles, 0, 1)
-    Candles = Candles.astype(np.float32)    # Ugly, just confirm.
-
-    CandleMarks = Candles[:, :, 9] # keep it for later use
-    Candles = np.delete(Candles, [0, 1, 2, 5, 6, 8, 9], axis = 2) # delete Open, High, Low, qVolume, #Trades, bQVolume, CandleMarks
-
-    assert (~np.isfinite(Candles)).any() == False
-
-    # marketrank, permute
-    nPrepaddedZeros = np.array([ np.argmax(Candles[:, m, 0]>0) for m in range(len(all_market_names)) ])
-    long_history_markets = np.argsort(nPrepaddedZeros)
-    all_marketrank = [ (all_market_names[m], 100 - round(np.argmax(Candles[:, m, 0]>0) / Candles.shape[0] * 100)) for m in long_history_markets ]
-
-    # permute all data.
-    all_market_names = [all_market_names[m] for m in long_history_markets]
-    Candles = Candles[:, long_history_markets]
-    # CandleMarks = CandleMarks[:, long_history_markets]
-
-    # chosen_markets, chosen_fields
-    chosen_market_names_x = [ elem[0] for elem in all_marketrank if elem[1] >= min_true_candle_percent_x ]
-    chosen_markets_x = tuple([ all_market_names.index(elem) for elem in chosen_market_names_x ])
-    chosen_markets_x = tuple(list(set(chosen_markets_x)))
-    chosen_field_names_x = [ name for name in all_field_names if name in chosen_fields_names_x]
-    chosen_fields_x = tuple( [ all_field_names.index(elem) for elem in chosen_field_names_x ] )
-    chosen_fields_x = tuple(list(set(chosen_fields_x)))
-
-    chosen_market_names_y = [ elem[0] for elem in all_marketrank if elem[1] >= min_true_candle_percent_y ]
-    chosen_markets_y = tuple([ all_market_names.index(elem) for elem in chosen_market_names_y ])
-    chosen_markets_y = tuple(list(set(chosen_markets_y)))
-    chosen_field_names_y = [ name for name in all_field_names if name in chosen_fields_names_y]
-    chosen_fields_y = tuple( [ all_field_names.index(elem) for elem in chosen_field_names_y ] )
-    chosen_fields_y = tuple(list(set(chosen_fields_y)))
-
-    chosen_markets = tuple(list(set(chosen_markets_x + chosen_markets_y)))
-    chosen_market_names = [all_market_names[i] for i in chosen_markets]
-    chosen_market_names = [ elem[0] for elem in all_marketrank if elem[0] in chosen_market_names ] # sort in rank
-    chosen_fields = tuple(sorted(list(set(chosen_fields_x + chosen_fields_y))))  # sort in id
-    chosen_field_names = [all_field_names[i] for i in chosen_fields]
-
-    # Reduce Candles to chosen_markets and chosen_fields
-    Candles = Candles[:][:, chosen_markets][:, :, chosen_fields]
-    CandleMarks = CandleMarks[:][:, chosen_markets]
-
-    # chosen_markets, chosen_fields. on chosen_market_names/chosen_field_names this time.
-    # x_indices, y_indices
-    chosen_market_names_x = [ elem[0] for elem in all_marketrank if elem[1] >= min_true_candle_percent_x ]
-    chosen_markets_x = tuple([ chosen_market_names.index(elem) for elem in chosen_market_names_x ])
-    chosen_markets_x = tuple(list(set(chosen_markets_x)))
-    chosen_field_names_x = [ name for name in all_field_names if name in chosen_fields_names_x]
-    chosen_fields_x = tuple( [ chosen_field_names.index(elem) for elem in chosen_field_names_x ] )
-    chosen_fields_x = tuple(list(set(chosen_fields_x)))
-    x_indices = ( chosen_markets_x, chosen_fields_x )
-
-    chosen_market_names_y = [ elem[0] for elem in all_marketrank if elem[1] >= min_true_candle_percent_y ]
-    chosen_markets_y = tuple([ chosen_market_names.index(elem) for elem in chosen_market_names_y ])
-    chosen_markets_y = tuple(list(set(chosen_markets_y)))
-    chosen_field_names_y = [ name for name in all_field_names if name in chosen_fields_names_y]
-    chosen_fields_y = tuple( [ chosen_field_names.index(elem) for elem in chosen_field_names_y ] )
-    chosen_fields_y = tuple(list(set(chosen_fields_y)))
-    y_indices = ( chosen_markets_y, chosen_fields_y )
-
-    learning_field_names_refined = [ name for name in chosen_field_names_y if name in learning_field_names ]
-    assert len(learning_field_names) == len(learning_field_names_refined)
-    learning_mask = [(1.0 if name in learning_field_names else 0.0) for name in chosen_field_names_y]
-
-    # Compute target_markets/fields
-    if target_market_names is not None:
-        target_market_names = [m for m in chosen_market_names if m in target_market_names]  # to have the same order as in chosen_market_names
-        target_markets = tuple([ chosen_market_names.index(elem) for elem in target_market_names ])
-    elif tarket_market_top_percent is not None and tarket_market_top_percent > 0:
-        target_market_names = chosen_market_names[: int(len(chosen_market_names) * tarket_market_top_percent / 100)]
-        target_market_names = [m for m in chosen_market_names if m in target_market_names] # to have the same order as in chosen_market_names
-        target_markets = tuple([ chosen_market_names.index(elem) for elem in target_market_names ])
-    else:
-        target_market_names = chosen_market_names_y
-        target_markets = chosen_markets_y
-
-    # Check for consistency
-    marketrank = [ all_marketrank[i] for i in range(len(all_marketrank)) if all_marketrank[i][0] in chosen_market_names ]
-    for r in marketrank:
-        r[0] in chosen_market_names # obvious
-        r[1] >= min(min_true_candle_percent_x, min_true_candle_percent_y)
-    for r in all_marketrank:
-        if r[1] >= min(min_true_candle_percent_x, min_true_candle_percent_y):
-            assert r[0] in chosen_market_names
-
-    assert Candles.shape[0] == CandleMarks.shape[0]
-    assert Candles.shape[1] == CandleMarks.shape[1]
-    assert Candles.shape[1] == len(chosen_market_names)
-
-    return \
-        Candles, CandleMarks, all_market_names, x_indices, y_indices, \
-        chosen_market_names_x, chosen_field_names_x, chosen_market_names_y, chosen_field_names_y, \
-        chosen_market_names, chosen_field_names, \
-        target_market_names, target_markets, learning_mask
-
-
-def get_conformed_data_3(
-    Candles2, reports2, chosen_market_names,
-    all_field_names, chosen_field_names
-    ):
-    all_market_names2 = [ s[0: s.find(':')] for s in reports2 if 'Success' in s ]
-    assert Candles2.shape[0] == len(all_market_names2)
-
-    # This function couples with the data collection program, in the structure of Candles and Report data.
-    Candles2 = np.swapaxes(Candles2, 0, 1)
-    Candles2 = Candles2.astype(np.float32)    # Ugly, just confirm.
-
-    CandleMarks2 = Candles2[:, :, 9] # keep it for later use
-    Candles2 = np.delete(Candles2, [0, 1, 2, 5, 6, 8, 9], axis = 2) # delete Open, High, Low, qVolume, #Trades, bQVolume, CandleMarks
-
-    assert (~np.isfinite(Candles2)).any() == False
-
-    #----------------- new ----------------
-
-    market_names = [ name for name in chosen_market_names if name in all_market_names2 ]
-    missing_names = [ name for name in chosen_market_names if name not in all_market_names2]
-    would_be_missing_indices = [chosen_market_names.index(name) for name in chosen_market_names if name not in all_market_names2]
-    print('missing_markets', missing_names)
-
-    market_indices = np.array( [all_market_names2.index(name) for name in market_names if name not in missing_names], dtype=np.int64)
-    Candles2 = Candles2[:, market_indices, :]
-    CandleMarks2 = CandleMarks2[:, market_indices]
-
-    assert CandleMarks2.shape[1] > 0
-    for index in would_be_missing_indices:
-        placeholder = Candles2[:, 0, :].copy(); placeholder[:, :] = 0.0 # propagete if needed.
-        Candles2 = np.insert(Candles2, index, placeholder, axis=1)
-        placeholder = CandleMarks2[:, 0].copy(); placeholder[:] = 0.0
-        CandleMarks2 = np.insert(CandleMarks2, index, placeholder, axis=1)
-
-    chosen_field_names = [ name for name in all_field_names if name in chosen_field_names]
-    chosen_fields = tuple( [ all_field_names.index(elem) for elem in chosen_field_names ] )
-    chosen_fields = tuple(list(set(chosen_fields)))   
-    Candles2 = Candles2[:, :, chosen_fields]
-
-    assert Candles2.shape[0] == CandleMarks2.shape[0]
-    assert Candles2.shape[1] == CandleMarks2.shape[1]
-    assert Candles2.shape[1] == len(chosen_market_names)
-    assert Candles2.shape[2] == len(chosen_fields)
-            
-    return Candles2, CandleMarks2, missing_names
 
 
 def standardize_2(Candles, logarithmic=False):
@@ -682,17 +458,29 @@ def standardize_2(Candles, logarithmic=False):
     return Candles, Standard
 
 
-def standardize_observation(Candles3, Standard):    # Not completed.
-    for market in range(Candles3.shape[1]):
-        for field in range(Candles3.shape[2]):
-            m, f, mu, sigma = Standard[market, field]
-            assert m == market
-            assert f == field
+def standardize_3(Candles, outlier_threshold = 3.0, logarithmic=False):
+    Standard = []
 
-            nzPs = np.array(range(Candles3.shape[0]))
-            Candles3[nzPs, market, field] = ( Candles3[nzPs, market, field] - mu ) / (sigma + 1e-9)
+    for market in range(Candles.shape[1]):
+        subStandard = []
+        for field in range(Candles.shape[2]):
+            if logarithmic:
+                nzPs = np.where( Candles[:, market, field] != 0.0 ) [0]
+            else:
+                nzPs = np.array(range(Candles.shape[0]))
+            mu = np.average(Candles[nzPs, market, field])
+            sigma = np.std(Candles[nzPs, market, field])
+            standardized = (Candles[nzPs, market, field] - mu) / (sigma + 1e-15)
+            
+            standardized[ standardized > outlier_threshold ] = outlier_threshold
+            standardized[ standardized < - outlier_threshold ] = - outlier_threshold
 
-    return Candles3
+            subStandard.append( (market, field, mu, sigma) )
+            assert standardized.dtype == Candles.dtype
+            Candles[nzPs, market, field] = standardized
+        Standard.append(subStandard)
+    Standard = np.array(Standard)
+    return Candles, Standard
 
 
 def get_sample_anchors_3(Data, Nx, Ny, Ns, seed=523):
@@ -711,63 +499,6 @@ def get_sample_anchors_3(Data, Nx, Ny, Ns, seed=523):
     sample_anchores_t, sample_anchores_v = train_test_split(sample_anchors, test_size=0.30, random_state=42)
 
     return sample_anchores_t, sample_anchores_v
-
-
-def get_joint_data(
-        Candles, CandleMarks, sample_anchors_t, sample_anchors_v,
-        Candles2, CandleMarks2, sample_anchors_t2, sample_anchors_v2
-    ):
-    JointCandles = np.concatenate((Candles, Candles2), axis=0)
-    JointMarks = np.concatenate((CandleMarks, CandleMarks2), axis=0)
-    print(JointCandles.shape)
-
-    max_anchor = max(np.max(sample_anchors_t), np.max(sample_anchors_v))
-    print(max_anchor)
-    sample_anchors_t2 = sample_anchors_t2 + max_anchor
-    sample_anchors_v2 = sample_anchors_v2 + max_anchor
-    print(sample_anchors_t2[:5])
-
-    sample_anchors_t = np.concatenate( (sample_anchors_t, sample_anchors_t2) )
-    sample_anchors_v = np.concatenate( (sample_anchors_v, sample_anchors_v2) )
-    print(sample_anchors_t.shape, sample_anchors_v.shape)
-
-    for _ in range(10):
-        permute = np.random.permutation(sample_anchors_t.shape[0])
-        sample_anchors = sample_anchors_t[permute]
-        permute = np.random.permutation(sample_anchors_v.shape[0])
-        sample_anchors = sample_anchors_v[permute]
-
-    return JointCandles, JointMarks, sample_anchors_t, sample_anchors_v
-
-
-def get_joint_data_2(
-        Candles, CandleMarks, timestamps_abs, sample_anchors_t, sample_anchors_v,
-        Candles2, CandleMarks2, timestamps_abs2, sample_anchors_t2, sample_anchors_v2,
-        interval_s
-    ):
-    assert timestamps_abs2[0] - timestamps_abs[-1] == interval_s
-
-    JointCandles = np.concatenate((Candles, Candles2), axis=0)
-    JointMarks = np.concatenate((CandleMarks, CandleMarks2), axis=0)
-    print(JointCandles.shape)
-
-    max_anchor = max(np.max(sample_anchors_t), np.max(sample_anchors_v))
-    print(max_anchor)
-    sample_anchors_t2 = sample_anchors_t2 + max_anchor
-    sample_anchors_v2 = sample_anchors_v2 + max_anchor
-    print(sample_anchors_t2[:5])
-
-    sample_anchors_t = np.concatenate( (sample_anchors_t, sample_anchors_t2) )
-    sample_anchors_v = np.concatenate( (sample_anchors_v, sample_anchors_v2) )
-    print(sample_anchors_t.shape, sample_anchors_v.shape)
-
-    for _ in range(10):
-        permute = np.random.permutation(sample_anchors_t.shape[0])
-        sample_anchors = sample_anchors_t[permute]
-        permute = np.random.permutation(sample_anchors_v.shape[0])
-        sample_anchors = sample_anchors_v[permute]
-
-    return JointCandles, JointMarks, sample_anchors_t, sample_anchors_v
 
 #==================== Define 'divide_to_multiple_csv_files' ====================
 
@@ -877,98 +608,10 @@ def csv_reader_to_dataset(filenames, nx, size_x, ny, size_y, time_x, time_y, siz
     return dataset
 
 
-def get_dxdy(x_indices, y_indices, size_time, Time_into_X, Time_into_Y):
-    size_x = get_timepoint_size(x_indices)
-    size_y = get_timepoint_size(y_indices) # time_into_x
-    dx = size_x + (size_time if Time_into_X else 0)
-    dx = dx + dx % 2
-    dy = size_y + (size_time if Time_into_X else 0)     # not Time_into_Y
-    dy = dy + dy % 2
-    assert dx == dy
-    return dx, dy
-
-
 def get_datasets_3(
     Candles, Time_into_X, Time_into_Y, Times, 
     sample_anchores_t, sample_anchores_v,
     Nx, x_indices, Ny, y_indices, size_time, target_markets, shift,
-    BatchSize, shuffle_batch, shuffle=True, cache=True
-):   
-    dx, dy = get_dxdy(x_indices, y_indices, size_time, Time_into_X, Time_into_Y)
-
-    non_target_markets_relative = [ y_indices[0].index(i) for i in y_indices[0] if i not in target_markets ]
-    nFeaturesPerMarket = len(y_indices[1])
-    all_ntmr = []
-    for ntmr in non_target_markets_relative:
-        all_ntmr = all_ntmr + list(range(ntmr* nFeaturesPerMarket, (ntmr+1) * nFeaturesPerMarket, 1))
-    non_target_features_relative = tuple(all_ntmr)
-
-    def anchor_to_sample(anchor): # This function is the bottle-neck of training speed.
-        anchor = anchor + shift
-
-        x = np.reshape(Candles[anchor: anchor + Nx][:, x_indices[0]][:, :, x_indices[1]], (Nx, -1))
-        if Time_into_X is True:
-            assert Times is not None
-            x = np.concatenate((x, np.reshape(Times[anchor: anchor + Nx], (Nx, -1))), axis=1) # concat(x, x_time)
-
-        y = np.reshape(Candles[anchor + Nx: anchor + Nx + Ny][:, y_indices[0]][:, :, y_indices[1]], (Ny, -1))
-
-        if Time_into_X is True:
-            assert Times is not None
-            y_time = np.reshape(Times[anchor + Nx: anchor + Nx + Ny], (Ny, -1))
-            if Time_into_Y is not True: y_time[:] = 0.0
-            y = np.concatenate((y, y_time), axis=1)
-
-        x = np.pad(x, [[1,1], [0,0]], constant_values=0)   # (1 pre-pad: Start, 1 post-pad: End) on axis 0. (0 pre-pad, 0 post-pad) on axis 1.
-        y = np.pad(y, [[1,1], [0,0]], constant_values=0)
-
-        if x.shape[-1] % 2 != 0:
-            x = np.pad(x, [[0,0], [0,1]], constant_values=0) # (0 pre-pad: Start, 0 post-pad: End) on axis 0. (0 pre-pad, 1 post-pad) on axis 1.
-            y = np.pad(y, [[0,0], [0,1]], constant_values=0)
-
-        assert dx == x.shape[1]
-        assert dy == y.shape[1]
-
-        y[:, non_target_features_relative] = 0.0 # Start/Stop = NoInfo = 0.0
-
-        return x, y[:-1], y[1:]
-        # so M(x, [y[0]]) -> y[1], M(x, [y[0], y[1]]) -> y[2], ..., M(x, [y[0], ..., y[-2]]) -> y[-1]
-        # where y[0] = Start, y[-1] = End.
-
-    def refine_dataset(sample_anchores):
-        dataset = tf.data.Dataset.from_tensor_slices(sample_anchores)
-        dataset = dataset.map(
-            lambda anchor: tf.numpy_function(
-                # All are evaluated to numpy things. E.g. anchor is evaluated to numpy.
-                anchor_to_sample,
-                inp = [anchor],
-                Tout = [Candles.dtype, Candles.dtype, Candles.dtype]
-            ),
-            num_parallel_calls=tf.data.AUTOTUNE
-        ) \
-        .map(lambda x, y, z: ((x, y), z))
-
-        if shuffle is True:
-            dataset = dataset.shuffle(BatchSize * shuffle_batch)
-        
-        dataset = dataset.batch(BatchSize, drop_remainder=False) \
-        .prefetch(tf.data.AUTOTUNE)
-
-        if cache:
-            dataset = dataset.cache()
-
-        return dataset
-
-    ds_train = refine_dataset(sample_anchores_t)
-    ds_valid = refine_dataset(sample_anchores_v)
-
-    return ds_train, ds_valid, dx, dy
-
-
-def get_datasets_no_end(
-    Candles, Time_into_X, Time_into_Y, Times, 
-    sample_anchores_t, sample_anchores_v,
-    Nx, x_indices, Ny, y_indices, size_time, target_markets, learning_mask, shift,
     BatchSize, shuffle_batch, shuffle=True
 ):
     
@@ -987,7 +630,6 @@ def get_datasets_no_end(
     for ntmr in non_target_markets_relative:
         all_ntmr = all_ntmr + list(range(ntmr* nFeaturesPerMarket, (ntmr+1) * nFeaturesPerMarket, 1))
     non_target_features_relative = tuple(all_ntmr)
-    learning_mask = np.tile( np.array(learning_mask, dtype=Candles.dtype), len(y_indices[0]) )
 
     def anchor_to_sample(anchor): # This function is the bottle-neck of training speed.
         anchor = anchor + shift
@@ -998,8 +640,6 @@ def get_datasets_no_end(
             x = np.concatenate((x, np.reshape(Times[anchor: anchor + Nx], (Nx, -1))), axis=1) # concat(x, x_time)
 
         y = np.reshape(Candles[anchor + Nx: anchor + Nx + Ny][:, y_indices[0]][:, :, y_indices[1]], (Ny, -1))
-
-        y = y * learning_mask
 
         if Time_into_X is True:
             assert Times is not None
@@ -1200,7 +840,7 @@ def MaskedMAE_Core(y_true, y_pred, sample_weight=None):
         masked_loss = tf.multiply(raw_loss, mask, name='masked_loss')
         rs_masked_loss = tf.reduce_sum(masked_loss, axis=-1, name='rs_masked_loss')  # depth axis is reduced
         rs_mask = tf.reduce_sum(mask, axis=-1, name='rs_mask')  # depth axis is reduced
-        loss = tf.divide(rs_masked_loss, rs_mask + 1e-9, name='loss')
+        loss = tf.divide(rs_masked_loss, rs_mask + 1e-6, name='loss')
         if sample_weight is not None:
             sample_weight = tf.cast(sample_weight, y_pred.dtype)
             sample_weight = tf.broadcast_to(sample_weight, loss.shape)
